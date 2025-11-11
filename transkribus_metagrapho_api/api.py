@@ -29,7 +29,7 @@ from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from PIL import Image
-from typing import Dict, List, Literal, Final, Generator, Type, TypeVar
+from typing import Literal, Final, Generator, Type, TypeVar
 
 
 MAX_IMAGE_SIZE: Final[int] = 20000000
@@ -198,11 +198,11 @@ class TranskribusMetagraphoAPI:
         line_detection: int | None = None,
         language_model: str | None = None,
         text: str | None = None,
-        regions: List[Dict] | None = None,
+        regions: list[dict] | None = None,
         mode: Literal["alto", "page"] = "page",
         wait: int = 45,
         **kwargs: float | int,
-    ) -> List[str | None]:
+    ) -> list[str | None]:
         """Run processing on several images and get ALTO or PAGE XML.
 
         Catches all exceptions that occur, the error are logged to stderr.
@@ -220,7 +220,7 @@ class TranskribusMetagraphoAPI:
         Returns:
          * list of XML, if an error occured for a given image `None` is returned
         """
-        process_ids: Dict[int, Path] = {}
+        process_ids: dict[int, Path] = {}
         for image_path in args:
             try:
                 logging.debug("Send {image_path} to processing endpoint.")
@@ -242,7 +242,7 @@ class TranskribusMetagraphoAPI:
                     exc_info=e,
                 )
 
-        xmls: List[str | None] = [None] * len(args)
+        xmls: list[str | None] = [None] * len(args)
         while len(process_ids) > 0:
             to_del = []
             counter = 0
@@ -349,7 +349,7 @@ class TranskribusMetagraphoAPI:
         line_detection: int | None = None,
         language_model: str | None = None,
         text: str | None = None,
-        regions: List[Dict] | None = None,
+        regions: list[dict] | None = None,
         **kwargs: float | int,
     ) -> int:
         """Send an image for processing.
@@ -367,7 +367,7 @@ class TranskribusMetagraphoAPI:
         Returns:
          * the process ID return by the API
         """
-        config: Dict = {
+        config: dict = {
             "textRecognition": {
                 "htrId": htr_id,
             }
@@ -393,7 +393,7 @@ class TranskribusMetagraphoAPI:
             if "numTextRegions" in kwargs:
                 config["lineDetection"]["numTextRegions"] = kwargs["numTextRegions"]
 
-        content: Dict[str, str | List[Dict]] = {}
+        content: dict[str, str | list[dict]] = {}
         if text is not None:
             content["text"] = text
         if regions is not None:
