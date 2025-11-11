@@ -27,7 +27,6 @@ from argparse import (
     RawTextHelpFormatter,
 )
 from pathlib import Path
-from typing import List
 
 from . import VERSION
 from .api import transkribus_metagrapho_api
@@ -129,7 +128,7 @@ def main():
     else:
         level = logging.DEBUG
 
-    handlers: List[logging.Handler] = []
+    handlers: list[logging.Handler] = []
     stdout_handler = logging.StreamHandler(sys.stdout)
     stdout_handler.setLevel(level)
     stdout_handler.addFilter(filter_info)
