@@ -18,9 +18,9 @@
 # along with Foobar. If not, see <http://www.gnu.org/licenses/>
 """Transkribus Metagrapho API Client."""
 
-from .api import TranskribusMetagraphoAPI, transkribus_metagrapho_api
+from .api import TranskribusMetagraphoApi, transkribus_metagrapho_api
 
-__all__ = ["TranskribusMetagraphoAPI", "transkribus_metagrapho_api"]
+__all__ = ["TranskribusMetagraphoApi", "transkribus_metagrapho_api"]
 
 __app_name__ = "transkribus-metagrapho-api"
 __author__ = "J. Nathanael Philipp"

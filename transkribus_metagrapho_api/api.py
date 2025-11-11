@@ -37,21 +37,21 @@ MAX_IMAGE_SIZE: Final[int] = 20000000
 to reduce the size."""
 
 
-class TranskribusMetagraphoAPI:
+class TranskribusMetagraphoApi:
     """Transkribus metagrapho API.
 
     https://www.transkribus.org/metagrapho/documentation
     """
 
-    T = TypeVar("T", bound="TranskribusMetagraphoAPI")
+    T = TypeVar("T", bound="TranskribusMetagraphoApi")
 
     BASE_URL: Final[str] = "https://transkribus.eu/processing/v1"
-    access_token: "TranskribusMetagraphoAPI.AccessToken"
+    access_token: "TranskribusMetagraphoApi.AccessToken"
 
     class AccessToken:
         """API access token."""
 
-        T = TypeVar("T", bound="TranskribusMetagraphoAPI.AccessToken")
+        T = TypeVar("T", bound="TranskribusMetagraphoApi.AccessToken")
         BASE_URL: Final[str] = (
             "https://account.readcoop.eu/auth/realms/readcoop/protocol/openid-connect"
         )
@@ -187,7 +187,7 @@ class TranskribusMetagraphoAPI:
 
     def __init__(self, username: str, password: str):
         """Init."""
-        self.access_token = TranskribusMetagraphoAPI.AccessToken.obtain(
+        self.access_token = TranskribusMetagraphoApi.AccessToken.obtain(
             username, password
         )
 
@@ -488,8 +488,8 @@ def transkribus_metagrapho_api(username: str, password: str) -> Generator:
      * password: password for API authentication
 
     Returns:
-     * an instance of `TranskribusMetagraphoAPI`
+     * an instance of `TranskribusMetagraphoApi`
     """
-    api = TranskribusMetagraphoAPI(username, password)
+    api = TranskribusMetagraphoApi(username, password)
     yield api
     api.close()
