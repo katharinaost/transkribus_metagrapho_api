@@ -217,16 +217,17 @@ class TranskribusMetagraphoApi:
          * regions:
          * mode: either `alto` or `page`, determenes the return XML
          * wait: wait between checking requests in seconds
+         * max_retries: maximum number of retry attempts for failed images
 
         Returns:
          * list of XML, if an error occured for a given image `None` is returned
         """
         process_ids: dict[int, Path] = {}
         retry_counts: dict[Path, int] = {image_path: 0 for image_path in args}
-
+        
         for image_path in args:
             try:
-                logging.debug(f"Send {image_path} to processing endpoint.")
+                logging.debug("Send {image_path} to processing endpoint.")
                 process_ids[
                     self.process(
                         image_path,
@@ -269,46 +270,48 @@ class TranskribusMetagraphoApi:
                                 )
                             to_del.append(process_id)
                         case "FAILED":
-                            raise RuntimeError("Processing failed")
+                            logging.warning(
+                                f"{image_path} [{process_id}] failed. "
+                                + f"Retry attempt {retry_counts[image_path] + 1}/{max_retries}."
+                            )
+                            to_del.append(process_id)
+                            # Retry if under max_retries
+                            if retry_counts[image_path] < max_retries:
+                                retry_counts[image_path] += 1
+                                try:
+                                    new_process_id = self.process(
+                                        image_path,
+                                        htr_id=htr_id,
+                                        line_detection=line_detection,
+                                        language_model=language_model,
+                                        text=text,
+                                        regions=regions,
+                                        **kwargs,
+                                    )
+                                    process_ids[new_process_id] = image_path
+                                    logging.info(
+                                        f"Resubmitted {image_path} with new process_id [{new_process_id}]"
+                                    )
+                                except Exception as e:
+                                    logging.error(
+                                        f"Failed to resubmit {image_path}",
+                                        exc_info=e,
+                                    )
+                            else:
+                                logging.error(
+                                    f"{image_path} failed after {max_retries} retries. Giving up."
+                                )
                         case _:
                             counter += 1
                             if counter >= 5:
                                 break
                 except Exception as e:
-                    retries = retry_counts[image_path]
-                    if retries < max_retries:
-                        retry_counts[image_path] += 1
-                        logging.warning(
-                            "An error occurred while checking the state and retriving "
-                            + f"results for {image_path}.\n"
-                            + f"Retry attempt {retry_counts[image_path] + 1}/{max_retries}.",
-                            exc_info=e,
-                        )
-                        to_del.append(process_id)
-                        try:
-                            new_process_id = self.process(
-                                image_path,
-                                htr_id=htr_id,
-                                line_detection=line_detection,
-                                language_model=language_model,
-                                text=text,
-                                regions=regions,
-                                **kwargs,
-                            )
-                            process_ids[new_process_id] = image_path
-                            logging.info(
-                                f"Resubmitted {image_path} with new process_id [{new_process_id}]"
-                            )
-                        except Exception as e:
-                            logging.error(
-                                f"Failed to resubmit {image_path}",
-                                exc_info=e,
-                            )
-                    else:
-                        logging.error(
-                            f"Giving up on {image_path} after {max_retries} retries."
-                        )
-                        to_del.append(process_id)
+                    logging.error(
+                        "An error occurred while checking the state and retriving "
+                        + f"results for {image_path}.",
+                        exc_info=e,
+                    )
+                    to_del.append(process_id)
 
             for process_id in to_del:
                 del process_ids[process_id]
@@ -330,7 +333,7 @@ class TranskribusMetagraphoApi:
             headers={"Authorization": self.access_token.get_auth_token()},
         )
 
-        # logging.debug(f"Response: {r.text}")
+        logging.debug(f"Response: {r.text}")
         if r.status_code == 401:
             logging.debug("Lost authorization, refreshing token.")
             self.access_token.refresh(True)
@@ -495,7 +498,7 @@ class TranskribusMetagraphoApi:
         Returns:
          * JSON response from the API
         """
-        logging.debug(f"Check status for {process_id}.")
+        logging.debug("Check status for {process_id}.")
         r = requests.get(
             f"{self.BASE_URL}/processes/{process_id}",
             headers={"Authorization": self.access_token.get_auth_token()},
