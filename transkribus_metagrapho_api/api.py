@@ -201,6 +201,7 @@ class TranskribusMetagraphoApi:
         regions: list[dict] | None = None,
         mode: Literal["alto", "page"] = "page",
         wait: int = 45,
+        max_retries: int = 3,
         **kwargs: float | int,
     ) -> list[str | None]:
         """Run processing on several images and get ALTO or PAGE XML.
@@ -216,37 +217,35 @@ class TranskribusMetagraphoApi:
          * regions:
          * mode: either `alto` or `page`, determenes the return XML
          * wait: wait between checking requests in seconds
+         * max_retries: maximum number of retries on failure
 
         Returns:
          * list of XML, if an error occured for a given image `None` is returned
         """
         process_ids: dict[int, Path] = {}
+        retry_counts: dict[Path, int] = {image_path: 0 for image_path in args}
+
         for image_path in args:
-            try:
-                logging.debug(f"Send {image_path} to processing endpoint.")
-                process_ids[
-                    self.process(
-                        image_path,
-                        htr_id=htr_id,
-                        line_detection=line_detection,
-                        language_model=language_model,
-                        text=text,
-                        regions=regions,
-                        **kwargs,
-                    )
-                ] = image_path
-            except Exception as e:
-                logging.error(
-                    f"An error occurred while sending {image_path} to processing "
-                    + "endpoint.",
-                    exc_info=e,
-                )
+            pid = self.process_with_resubmit(
+                image_path,
+                htr_id=htr_id,
+                line_detection=line_detection,
+                language_model=language_model,
+                text=text,
+                regions=regions,
+                max_retries=max_retries,
+                **kwargs,
+            )
+            if pid is not None:
+                process_ids[pid] = image_path
+            else:
+                logging.error(f"Failed to submit {image_path} for processing.")
 
         xmls: list[str | None] = [None] * len(args)
         while len(process_ids) > 0:
             to_del = []
             counter = 0
-            for process_id, image_path in process_ids.items():
+            for process_id, image_path in list(process_ids.items()):
                 try:
                     status = self.status(process_id)
                     logging.debug(f"{image_path} [{process_id}] {status}")
@@ -266,19 +265,39 @@ class TranskribusMetagraphoApi:
                                 )
                             to_del.append(process_id)
                         case "FAILED":
-                            to_del.append(process_id)
+                            raise RuntimeError("Processing failed")
                         case _:
                             counter += 1
                             if counter >= 5:
                                 break
                 except Exception as e:
-                    logging.error(
-                        "An error occurred while checking the state and retriving "
-                        + f"results for {image_path}.",
-                        exc_info=e,
-                    )
                     to_del.append(process_id)
-
+                    if retry_counts[image_path] < max_retries:
+                        retry_counts[image_path] += 1
+                        logging.warning(
+                            "An error occurred while checking the state and retrieving "
+                            + f"results for {image_path}."
+                            + f"Starting retry attempt {retry_counts[image_path]}/{max_retries}.",
+                            exc_info=e,
+                        )
+                        new_pid = self.process_with_resubmit(
+                            image_path,
+                            htr_id=htr_id,
+                            line_detection=line_detection,
+                            language_model=language_model,
+                            text=text,
+                            regions=regions,
+                            max_retries=max_retries,
+                            **kwargs,
+                        )
+                        if new_pid is not None:
+                            process_ids[new_pid] = image_path
+                        else:
+                            logging.error(f"Failed to submit {image_path} for processing.")
+                    else:
+                        logging.error(
+                            f"{image_path} failed after {max_retries} retries. Giving up."
+                        )
             for process_id in to_del:
                 del process_ids[process_id]
             time.sleep(wait)
@@ -341,6 +360,63 @@ class TranskribusMetagraphoApi:
 
         r.raise_for_status()
         return r.text
+
+    def process_with_resubmit(
+        self,
+        image_path: str | Path,
+        htr_id: int,
+        line_detection: int | None = None,
+        language_model: str | None = None,
+        text: str | None = None,
+        regions: list[dict] | None = None,
+        max_retries: int = 3,
+        **kwargs: float | int,
+    ) -> int | None:
+        """Send an image for processing with resubmit on failure.
+
+        Args:
+         * image_path: path of a image to be sind to the API
+         * htr_id: ID for the HTR model to use
+         * line_detection: ID for the line detection model to use
+         * language_model: ID for the language detection model to use
+         * text: text
+         * regions: text regions
+         * max_retries: maximum number of retries on failure
+         
+         Returns:
+         * the process ID return by the API or None if all retries failed
+         """
+        
+        retry_count = 0
+        while retry_count <= max_retries:
+            try:
+                logging.debug(f"Send {image_path} to processing endpoint.")
+                pid = self.process(
+                    image_path,
+                    htr_id=htr_id,
+                    line_detection=line_detection,
+                    language_model=language_model,
+                    text=text,
+                    regions=regions,
+                    **kwargs,
+                )
+                return pid
+            except Exception as e:
+                if retry_count < max_retries:
+                    retry_count += 1
+                    logging.warning(
+                        f"An error occurred while sending {image_path} to processing "
+                        + "endpoint.\n"
+                        + f"Retry attempt {retry_count}/{max_retries}.",
+                        exc_info=e,
+                    )
+                    time.sleep(5)
+                else:
+                    logging.error(
+                        f"Failed to submit {image_path} after {max_retries} retries.",
+                        exc_info=e,
+                    )
+                    return None
 
     def process(
         self,
