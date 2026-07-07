@@ -1,4 +1,4 @@
-# Copyright (C) 2023-2025 J. Nathanael Philipp (jnphilipp) <nathanael@philipp.land>
+# Copyright (C) 2023-2026 J. Nathanael Philipp (jnphilipp) <nathanael@philipp.land>
 #
 # Transkribus Metagrapho API Client
 #
@@ -19,6 +19,7 @@
 """Transkribus Metagrapho API Client."""
 
 import base64
+import json
 import logging
 import re
 import requests
@@ -30,7 +31,6 @@ from io import BytesIO
 from pathlib import Path
 from PIL import Image
 from typing import Literal, Final, Generator, Type, TypeVar
-
 
 MAX_IMAGE_SIZE: Final[int] = 20000000
 """Maximum image size (in bytes) that Transkribus accepts, lager images while converted
@@ -193,17 +193,16 @@ class TranskribusMetagraphoApi:
 
     def __call__(
         self,
-        *args: Path,
+        *args: str | Path | tuple[Path, str | None, list[dict] | None],
         htr_id: int,
         line_detection: int | None = None,
         language_model: str | None = None,
-        text: str | None = None,
-        regions: list[dict] | None = None,
         mode: Literal["alto", "page"] = "page",
         wait: int = 45,
         max_retries: int = 3,
+        process_ids_file: Path | None = None,
         **kwargs: float | int,
-    ) -> list[str | None]:
+    ) -> dict[Path, str | None]:
         """Run processing on several images and get ALTO or PAGE XML.
 
         Catches all exceptions that occur, the error are logged to stderr.
@@ -218,51 +217,81 @@ class TranskribusMetagraphoApi:
          * mode: either `alto` or `page`, determenes the return XML
          * wait: wait between checking requests in seconds
          * max_retries: maximum number of retries on failure
+         * process_ids_file: optional file to persist in-flight process IDs to, so a
+           run can be resumed
 
         Returns:
          * list of XML, if an error occured for a given image `None` is returned
         """
-        process_ids: dict[int, Path] = {}
-        retry_counts: dict[Path, int] = {image_path: 0 for image_path in args}
+        process_ids: dict[int, tuple[Path, str | None, list[dict] | None, int]] = {}
+        if process_ids_file is not None and process_ids_file.exists():
+            logging.debug(f"Reading process IDs from {process_ids_file}.")
+            with open(process_ids_file, "r", encoding="utf8") as f:
+                for k, v in json.loads(f.read()).items():
+                    process_ids[k] = (Path(v[0]), v[1], v[2], 0)
+            logging.debug(
+                f"Read {len(process_ids)} process IDs from {process_ids_file}."
+            )
 
-        for image_path in args:
+        for arg in args:
+            if isinstance(arg, str):
+                if any([v[0] == Path(arg) for v in process_ids.values()]):
+                    continue
+                arg = (Path(arg), None, None)
+            elif isinstance(arg, Path):
+                if any([v[0] == arg for v in process_ids.values()]):
+                    continue
+                arg = (arg, None, None)
+
             pid = self.process_with_resubmit(
-                image_path,
+                arg[0],
                 htr_id=htr_id,
                 line_detection=line_detection,
                 language_model=language_model,
-                text=text,
-                regions=regions,
+                text=arg[1],
+                regions=arg[2],
                 max_retries=max_retries,
                 **kwargs,
             )
             if pid is not None:
-                process_ids[pid] = image_path
+                process_ids[pid] = (arg[0], arg[1], arg[2], 0)
             else:
-                logging.error(f"Failed to submit {image_path} for processing.")
+                logging.error(f"Failed to submit {arg[0]} for processing.")
 
-        xmls: list[str | None] = [None] * len(args)
+        if process_ids_file is not None:
+            logging.debug(
+                f"Write {len(process_ids)} process IDs to {process_ids_file}."
+            )
+            with open(process_ids_file, "w", encoding="utf8") as f:
+                f.write(
+                    json.dumps(
+                        {
+                            k: (str(v[0]), v[1], v[2], v[3])
+                            for k, v in process_ids.items()
+                        }
+                    )
+                )
+                f.write("\n")
+            logging.debug(
+                f"Saved {len(process_ids)} process IDs to {process_ids_file}."
+            )
+
+        xmls: dict[Path, str | None] = {v[0]: None for v in process_ids.values()}
         while len(process_ids) > 0:
             to_del = []
             counter = 0
-            for process_id, image_path in list(process_ids.items()):
+            for process_id, (path, text, regions, failed) in list(
+                process_ids.items()
+            ):
                 try:
                     status = self.status(process_id)
-                    logging.debug(f"{image_path} [{process_id}] {status}")
+                    logging.debug(f"{path} [{process_id}] {status}")
                     match status.upper():
                         case "FINISHED":
                             if mode == "alto":
-                                xmls[args.index(image_path)] = re.sub(
-                                    r"<fileName>.+?</fileName>",
-                                    f"<fileName>{image_path.name}</fileName>",
-                                    self.alto(process_id),
-                                )
+                                xmls[path] = self.alto(process_id, path.name)
                             elif mode == "page":
-                                xmls[args.index(image_path)] = re.sub(
-                                    r'<Page imageFilename="[^"]+"',
-                                    f'<Page imageFilename="{image_path.name}"',
-                                    self.page(process_id),
-                                )
+                                xmls[path] = self.page(process_id, path.name)
                             to_del.append(process_id)
                         case "FAILED":
                             raise RuntimeError("Processing failed")
@@ -272,16 +301,15 @@ class TranskribusMetagraphoApi:
                                 break
                 except Exception as e:
                     to_del.append(process_id)
-                    if retry_counts[image_path] < max_retries:
-                        retry_counts[image_path] += 1
+                    if failed < max_retries:
                         logging.warning(
                             "An error occurred while checking the state and retrieving "
-                            + f"results for {image_path}."
-                            + f"Starting retry attempt {retry_counts[image_path]}/{max_retries}.",
+                            + f"results for {path}. "
+                            + f"Starting retry attempt {failed + 1}/{max_retries}.",
                             exc_info=e,
                         )
                         new_pid = self.process_with_resubmit(
-                            image_path,
+                            path,
                             htr_id=htr_id,
                             line_detection=line_detection,
                             language_model=language_model,
@@ -291,26 +319,46 @@ class TranskribusMetagraphoApi:
                             **kwargs,
                         )
                         if new_pid is not None:
-                            process_ids[new_pid] = image_path
+                            process_ids[new_pid] = (path, text, regions, failed + 1)
                         else:
-                            logging.error(f"Failed to submit {image_path} for processing.")
+                            logging.error(f"Failed to submit {path} for processing.")
                     else:
                         logging.error(
-                            f"{image_path} failed after {max_retries} retries. Giving up."
+                            f"{path} failed after {max_retries} retries. Giving up.",
+                            exc_info=e,
                         )
             for process_id in to_del:
                 del process_ids[process_id]
+            if process_ids_file is not None:
+                logging.debug(
+                    f"Write {len(process_ids)} process IDs to {process_ids_file}."
+                )
+                with open(process_ids_file, "w", encoding="utf8") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                k: (str(v[0]), v[1], v[2], v[3])
+                                for k, v in process_ids.items()
+                            }
+                        )
+                    )
+                    f.write("\n")
+                logging.debug(
+                    f"Wrote {len(process_ids)} process IDs to {process_ids_file}."
+                )
             time.sleep(wait)
         return xmls
 
-    def alto(self, process_id: int) -> str:
-        """Retrive ALTO XML.
+    def alto(self, process_id: int, image_filename: str | None = None) -> str:
+        """Retrive ALTO-XML.
 
         Args:
          * process_id: a process id
+         * image_filename: changes the image filename in the ALTO-XML toi the given
+           value if not `None`
 
         Returns:
-         * ALTO XML
+         * ALTO-XML
         """
         logging.debug(f"Get ALTO XML for {process_id}.")
         r = requests.get(
@@ -325,7 +373,15 @@ class TranskribusMetagraphoApi:
             return self.alto(process_id)
 
         r.raise_for_status()
-        return r.text
+        return (
+            r.text
+            if image_filename is None
+            else re.sub(
+                r"<fileName>.+?</fileName>",
+                f"<fileName>{image_filename}</fileName>",
+                r.text,
+            )
+        )
 
     def close(self) -> bool:
         """Close this API.
@@ -337,14 +393,16 @@ class TranskribusMetagraphoApi:
         """
         return self.access_token.revoke()
 
-    def page(self, process_id: int) -> str:
-        """Retrive PAGE XML.
+    def page(self, process_id: int, image_filename: str | None = None) -> str:
+        """Retrive PAGE-XML.
 
         Args:
          * process_id: a process id
+         * image_filename: changes the image filename in the PAGE-XML to the given value
+           if not `None`
 
         Returns:
-         * PAGE XML
+         * PAGE-XML
         """
         logging.debug(f"Get PAGE-XML for {process_id}.")
         r = requests.get(
@@ -359,7 +417,15 @@ class TranskribusMetagraphoApi:
             return self.page(process_id)
 
         r.raise_for_status()
-        return r.text
+        return (
+            r.text
+            if image_filename is None
+            else re.sub(
+                r'<Page imageFilename="[^"]+"',
+                f'<Page imageFilename="{image_filename}"',
+                r.text,
+            )
+        )
 
     def process_with_resubmit(
         self,
@@ -481,9 +547,16 @@ class TranskribusMetagraphoApi:
         if not image_path.is_file():
             raise TypeError(f"{image_path} is not a file.")
 
-        if image_path.stat().st_size > MAX_IMAGE_SIZE:
+        logging.debug(
+            f"Open image {image_path} (<{MAX_IMAGE_SIZE}B) and base64 encode it."
+        )
+        img_base64 = base64.b64encode(open(image_path, "rb").read()).decode()
+        if (
+            image_path.stat().st_size > MAX_IMAGE_SIZE
+            or len(img_base64) > MAX_IMAGE_SIZE
+        ):
             logging.debug(
-                f"Open image {image_path}, convert (>{MAX_IMAGE_SIZE}B) and "
+                f"Image {image_path} too large, convert (>{MAX_IMAGE_SIZE}B) and "
                 + "base64 encode it."
             )
             quality = 95
@@ -491,16 +564,14 @@ class TranskribusMetagraphoApi:
                 image = Image.open(image_path)
                 buffered = BytesIO()
                 image.save(buffered, format="JPEG", quality=quality, optimize=True)
-                if buffered.getbuffer().nbytes > MAX_IMAGE_SIZE:
+                img_base64 = base64.b64encode(buffered.getvalue()).decode()
+                if (
+                    buffered.getbuffer().nbytes > MAX_IMAGE_SIZE
+                    or len(img_base64) > MAX_IMAGE_SIZE
+                ):
                     quality -= 3
                 else:
                     break
-            img_base64 = base64.b64encode(buffered.getvalue()).decode()
-        else:
-            logging.debug(
-                f"Open image {image_path} (<{MAX_IMAGE_SIZE}B) and base64 encode it."
-            )
-            img_base64 = base64.b64encode(open(image_path, "rb").read()).decode()
 
         r = requests.post(
             f"{self.BASE_URL}/processes",

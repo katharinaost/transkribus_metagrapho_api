@@ -5,25 +5,25 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "transkribus_metagrapho_api"
-version = "0.2.0"
+version = "0.3.2"
 authors = [
     {name = "J. Nathanael Philipp", email = "nathanael@philipp.land"}
 ]
 description="Transkribus Metagrapho API Client."
 readme = "README.md"
-license = {text = "GPLv3+"}
-requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.11"
 classifiers = [
     "Development Status :: 5 - Production/Stable",
-    "Environment :: Web Environment",
+    "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
     "Programming Language :: Python",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dynamic = ["dependencies"]
